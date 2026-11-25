@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b6b45">
+<title>Inventario RR.SS. Otuzco</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="9" width="18" height="19" rx="2" fill="currentColor"/><rect x="5" y="5" width="22" height="4" rx="1.5" fill="currentColor" opacity=".7"/><circle cx="11" cy="29" r="2.4" fill="currentColor"/><circle cx="21" cy="29" r="2.4" fill="currentColor"/><path d="M12 14v9M16 14v9M20 14v9" stroke="var(--brand-bg)" stroke-width="1.6"/></svg>
+    <div><strong>Inventario de dispositivos RR.SS.</strong><span>Municipalidad Provincial de Otuzco · GSMyGA</span></div>
+  </div>
+  <button class="sync" id="estadoGuardado" type="button" title="Estado de sincronización con Google Drive (toque para sincronizar)">Solo en este equipo</button>
+</header>
+<nav class="tabs" id="tabs" aria-label="Secciones">
+  <a href="#panel" data-v="panel">Panel</a>
+  <a href="#inventario" data-v="inventario">Inventario</a>
+  <a href="#nuevo" data-v="nuevo">+ Registrar</a>
+  <a href="#mapa" data-v="mapa">Mapa</a>
+  <a href="#tecnico" data-v="tecnico">Evaluación técnica</a>
+  <a href="#diseno" data-v="diseno">Dimensionamiento</a>
+  <a href="#datos" data-v="datos">Datos y ajustes</a>
+</nav>
+<main id="view" class="wrap"></main>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="dlg"><form method="dialog" id="dlgBody"></form></dialog>
+<script src="config.js"></script>
+<script src="data-inicial.js"></script>
+<script src="vendor/piexif.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>

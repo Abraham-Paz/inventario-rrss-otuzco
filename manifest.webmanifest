@@ -1,0 +1,11 @@
+{
+  "name": "Inventario de dispositivos RR.SS. – Otuzco",
+  "short_name": "Inventario RRSS",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0b6b45",
+  "lang": "es-PE",
+  "icons": [{"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+}
