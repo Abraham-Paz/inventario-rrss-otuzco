@@ -9,7 +9,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = (n, d = 0) => (n === '' || n == null || isNaN(n)) ? '–' : Number(n).toLocaleString('es-PE', {minimumFractionDigits:d, maximumFractionDigits:d});
 const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
-const hoy = () => new Date().toISOString().slice(0, 19);
+const hoy = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 23); /* hora local con milisegundos */
 const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const split = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 
@@ -178,18 +178,24 @@ function siguienteCodigo(tipo) {
 }
 
 /* ---------- Router ---------- */
-const VIEWS = {panel, inventario, nuevo: arg => formulario(null, arg), editar: id => formulario(id), ficha, inspeccion, mapa, tecnico, diseno, datos};
+const VIEWS = {panel, inventario, nuevo: arg => formulario(null, arg), editar: id => formulario(id), ficha, inspeccion, mapa, tecnico, diseno, datos, usuarios: () => usuarios()};
 let mapObj = null;
 function route() {
   const [v, id] = (location.hash.slice(1) || 'panel').split('/');
   alSalir.forEach(f => { try { f(); } catch (e) {} }); alSalir = [];
-  if (requiereLogin()) { if (mapObj) { mapObj.remove(); mapObj = null; } return pantallaLogin(); }
+  if (mapObj) { mapObj.remove(); mapObj = null; }
+  estadoDrive();
+  if (requiereLogin()) return pantallaLogin();
+  if (API() && yo() && yo().debeCambiar) return pantallaClave(true);
   $('#tabs').hidden = false;
+  $$('#tabs a').forEach(a => a.hidden = !puede(PERM_VISTA[a.dataset.v]));
+  if (!VIEWS[v] || !puede(PERM_VISTA[v])) { if (location.hash.slice(1) !== primeraVista()) { location.hash = primeraVista(); return; } }
   const fn = VIEWS[v] || panel;
   $$('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.v === v || (v === 'editar' && a.dataset.v === 'nuevo') || ((v === 'ficha' || v === 'inspeccion') && a.dataset.v === 'inventario')));
   if (mapObj) { mapObj.remove(); mapObj = null; }
   $('#view').innerHTML = '';
   fn(id ? decodeURIComponent(id) : undefined);
+  $$('#view [data-perm]').forEach(el => el.hidden = !puede(el.dataset.perm));
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
@@ -223,7 +229,7 @@ function panel() {
   $('#view').innerHTML = `
   <div class="head"><div><h1>${fmt(pct(t.b, t.und))} % de las unidades están en buen estado</h1>
   <p class="mut">${fmt(t.reg)} puntos registrados · ${fmt(t.und)} unidades · ${fmt(t.r)} requieren mantenimiento y ${fmt(t.m)} reemplazo. Año de referencia ${anioRef()}.</p></div>
-  <div class="row noprint"><a class="btn pri" href="#nuevo">+ Registrar dispositivo</a><a class="btn" href="#inventario">Actualizar estado</a></div></div>
+  <div class="row noprint"><a class="btn pri" href="#nuevo" data-perm="registrar">+ Registrar dispositivo</a><a class="btn" href="#inventario" data-perm="inspeccion">Actualizar estado</a></div></div>
   <div class="kpis">
     <div class="kpi hl"><b>${fmt(t.und)}</b><span>unidades en ${fmt(t.reg)} puntos</span></div>
     <div class="kpi"><b>${fmt(t.cap / 1000, 1)} m³</b><span>capacidad declarada</span></div>
@@ -243,7 +249,7 @@ function panel() {
     <div class="card"><h3>Capacidad instalada por tipo <span class="mut small">(litros declarados)</span></h3>${barras(agrupar(D, 'tipo', r => calc(r).capTotal), 0, 'c-brand', ' L')}</div>
     <div class="card"><h3>Últimas actualizaciones</h3><ul class="hist">${ult.map(r => `<li><a href="#ficha/${esc(r.id)}"><b>${esc(r.codigo)}</b></a> · ${esc(r.direccion)}<br><span class="mut small">${esc((r.actualizado || '').replace('T', ' ').slice(0, 16))} · ${esc((r.historial || []).slice(-1)[0]?.usuario || '')}</span></li>`).join('')}</ul></div>
   </div>
-  <a class="btn pri fab noprint" href="#nuevo">+ Registrar</a>`;
+  <a class="btn pri fab noprint" href="#nuevo" data-perm="registrar">+ Registrar</a>`;
 }
 
 /* ---------- INVENTARIO ---------- */
@@ -251,7 +257,7 @@ function inventario() {
   const f = S.filtros;
   $('#view').innerHTML = `
   <div class="head"><div><h1>Inventario</h1><p class="mut">Toque un registro para ver su ficha, inspeccionarlo o editarlo.</p></div>
-  <div class="row noprint"><button class="btn sm" id="limpiar" type="button">Limpiar filtros</button><button class="btn sm" id="xlsF" type="button">Exportar lo filtrado (Excel)</button></div></div>
+  <div class="row noprint"><button class="btn sm" id="limpiar" type="button">Limpiar filtros</button><button class="btn sm" id="xlsF" type="button" data-perm="datos">Exportar lo filtrado (Excel)</button></div></div>
   <div class="filters noprint">
     <div><label for="f_q">Buscar</label><input id="f_q" placeholder="Código, dirección, defecto…" value="${esc(f.q || '')}"></div>
     <div><label for="f_tipo">Tipo</label><select id="f_tipo">${opts(S.cat.tipos.map(t => t.n), f.tipo, '(Todos)')}</select></div>
@@ -263,7 +269,7 @@ function inventario() {
     <div><label for="f_alerta">Alerta técnica</label><select id="f_alerta"><option value="">(Ninguna)</option>${[['vol', 'Volumen inconsistente/dudoso'], ['vida', 'Fin de vida útil'], ['sen', 'Sin señalización'], ['llen', 'Llenado ≥ 76 % o desborde']].map(([v, t]) => `<option value="${v}" ${f.alerta === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
   </div>
   <div id="lista"></div>
-  <a class="btn pri fab noprint" href="#nuevo">+ Registrar</a>`;
+  <a class="btn pri fab noprint" href="#nuevo" data-perm="registrar">+ Registrar</a>`;
   const pintar = () => {
     const L = filtrar(), t = totales(L);
     $('#lista').innerHTML = `<p class="small mut">${fmt(t.reg)} registros · ${fmt(t.und)} unidades · ${fmt(t.cap)} L declarados · ${fmt(t.b)} buenas, ${fmt(t.r)} regulares, ${fmt(t.m)} malas</p>
@@ -301,7 +307,7 @@ function ficha(id) {
   const c = calc(r), ll = r.este && r.norte ? fromUTM(+r.este, +r.norte, zoneNum(r.zona), isSouth(r.zona)) : null;
   $('#view').innerHTML = `
   <div class="head"><div><p class="mut small"><a href="#inventario">← Inventario</a></p><h1>${esc(r.codigo)} · ${esc(r.tipo)}</h1><p class="mut">${esc(r.direccion)} · ${esc(r.sector)}</p></div>
-  <div class="row noprint"><a class="btn pri" href="#inspeccion/${esc(r.id)}">Inspeccionar / actualizar</a><a class="btn" href="#editar/${esc(r.id)}">Editar</a><button class="btn" type="button" onclick="print()">Imprimir ficha</button><button class="btn bad" id="del" type="button">Eliminar</button></div></div>
+  <div class="row noprint"><a class="btn pri" href="#inspeccion/${esc(r.id)}" data-perm="inspeccion">Inspeccionar / actualizar</a><a class="btn" href="#editar/${esc(r.id)}" data-perm="registrar">Editar</a><button class="btn" type="button" onclick="print()">Imprimir ficha</button><button class="btn bad" id="del" type="button" data-perm="eliminar">Eliminar</button></div></div>
   <div class="ficha">
     <div class="card">
       <div class="row" style="margin-bottom:10px">${pill(r.estado)} ${priPill(c.pri)} <span class="pill p-${c.cls}">Volumen: ${esc(c.ver)}</span>${c.finVida ? '<span class="pill p-bad">Fin de vida útil</span>' : ''}</div>
@@ -325,13 +331,15 @@ function ficha(id) {
       <div class="alert ${c.cls === 'ok' ? 'ok' : c.cls === 'bad' ? 'bad' : c.cls === 'info' ? 'info' : ''}">${esc(c.nota)}<br><span class="small">${esc(c.refTxt)}${c.capCorr !== c.cap ? ' · Capacidad verificable estimada: ' + fmt(c.capCorr) + ' L c/u.' : ''}</span></div>
       ${c.ntp.ok === false ? `<div class="alert">${esc(c.ntp.txt)}</div>` : c.ntp.ok ? `<div class="alert ok">${esc(c.ntp.txt)}</div>` : ''}
     </div>
-    <div>
-      <div class="card">${dibujo(r)}<h3>Fotografías georreferenciadas</h3><div class="fotos" id="thumbs"><span class="mut small">Sin fotos registradas.</span></div><div id="fichaMapa" class="minimapa" style="height:220px;margin-top:10px"></div>
-      ${r.foto ? `<p class="small" style="margin-top:8px"><a href="${esc(r.foto)}" target="_blank" rel="noopener">Ver fotografía del inventario 2025 (Drive)</a></p>` : ''}</div>
+    <div class="ficha-der">
+      <div class="card fotoHero"><div id="fotoPrincipal" class="fotoPrincipal"><div class="sinfoto">Cargando fotografía…</div></div></div>
+      <div class="card" style="margin-top:16px"><h3>Fotografías georreferenciadas</h3><div class="fotos" id="thumbs"><span class="mut small">Sin fotos registradas.</span></div><div id="fichaMapa" class="minimapa" style="height:220px;margin-top:10px"></div>
+      ${r.foto ? `<p class="small" style="margin-top:8px"><a href="${esc(r.foto)}" target="_blank" rel="noopener">Ver fotografía original del inventario 2025 en Drive</a></p>` : ''}<details style="margin-top:10px"><summary class="small">Esquema a escala</summary>${dibujo(r)}</details></div>
       <div class="card" style="margin-top:16px"><h3>Historial de actualizaciones</h3><ul class="hist">${(r.historial || []).slice().reverse().map(h => `<li><b>${esc(h.tipo || 'Cambio')}</b> · ${esc((h.fecha || '').replace('T', ' ').slice(0, 16))} · ${esc(h.usuario || '')}${h.nota ? '<br>' + esc(h.nota) : ''}${Object.keys(h.cambios || {}).length ? '<br><span class="small mut">' + Object.entries(h.cambios).map(([k, v]) => esc(k) + ': ' + esc(v[0] ?? '') + ' → ' + esc(v[1] ?? '')).join(' · ') + '</span>' : ''}</li>`).join('')}</ul></div>
     </div>
   </div>`;
-  $('#del').onclick = () => confirmar(`¿Eliminar ${r.codigo}? Esta acción no se puede deshacer (exporte un respaldo antes si tiene dudas).`, () => { fotosMeta(r).forEach(f => DB.del(f.k)); S.borrados.push({id: r.id, codigo: r.codigo, fecha: hoy(), por: (S.auth && S.auth.email) || S.set.responsable}); S.devices = S.devices.filter(d => d.id !== id); save('Registro eliminado'); location.hash = 'inventario'; });
+  $('#del').onclick = () => confirmar(`¿Eliminar ${r.codigo}? Esta acción no se puede deshacer (exporte un respaldo antes si tiene dudas).`, () => { fotosMeta(r).forEach(f => DB.del(f.k)); S.borrados.push({id: r.id, codigo: r.codigo, fecha: hoy(), por: nombreUsuario()}); S.devices = S.devices.filter(d => d.id !== id); save('Registro eliminado'); location.hash = 'inventario'; });
+  fotoPrincipal(r);
   mostrarFotos(r);
 }
 async function mostrarFotos(r) {
@@ -343,12 +351,15 @@ async function mostrarFotos(r) {
       const src = await DB.get(f.k).catch(() => null);
       const dist = pt && f.e ? Math.round(Math.hypot(f.e - pt.e, f.n - pt.n)) : null;
       const fig = document.createElement('div'); fig.className = 'foto';
-      fig.innerHTML = `${src ? `<a href="${src}" target="_blank" download="${esc(r.codigo)}_${esc(f.k)}.jpg"><img src="${src}" alt="Foto ${esc(r.codigo)}"></a>` : `<div class="sinimg">${f.url ? 'En Drive' : 'Sin copia local'}</div>`}
+      fig.innerHTML = `${src ? `<img src="${src}" alt="Foto ${esc(r.codigo)}" class="zoom">` : `<div class="sinimg">${f.url ? 'En Drive' : 'Sin copia local'}</div>`}
         <div class="small"><b>${esc((f.fecha || '').replace('T', ' ').slice(0, 16))}</b><br>${f.e ? `E ${esc(f.e)} · N ${esc(f.n)}${f.acc ? ' · ±' + esc(f.acc) + ' m' : ''}` : '<span style="color:var(--bad)">Sin coordenadas</span>'}<br>
         <span class="mut">${esc(f.origen || '')}${dist != null ? ' · a ' + dist + ' m del punto' : ''}</span><br>
         ${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">✔ Ver en Drive</a>` : '<span class="pill p-warn">Pendiente de subir</span>'}
         ${dist != null && dist > 30 ? '<br><span class="pill p-bad">Foto lejos del punto: verificar</span>' : ''}</div>`;
       box.appendChild(fig);
+      const pieF = `${r.codigo} · ${(f.fecha || '').replace('T', ' ').slice(0, 16)}${f.e ? ' · E ' + f.e + ' N ' + f.n : ''}`;
+      if (src) $('img', fig).onclick = () => verImagen(src, pieF);
+      else if (f.driveId) imagenDrive(f.driveId).then(d => { if (!d) return; const s0 = $('.sinimg', fig); if (s0) { s0.outerHTML = `<img src="${esc(d)}" alt="Foto" class="zoom">`; $('img', fig).onclick = () => verImagen(d, pieF); } });
     }
   }
   const mbox = $('#fichaMapa');
@@ -380,7 +391,7 @@ function inspeccion(id) {
       <div><label for="i_llenado">Nivel de llenado</label><select id="i_llenado">${opts(S.cat.llenado, r.llenado, '(Sin dato)')}</select></div>
       <div><label for="i_alrededor">¿Residuos dispersos alrededor?</label><select id="i_alrededor">${opts(['No', 'Sí'], r.alrededor, '(Sin dato)')}</select></div>
       <div><label for="i_frecuencia">Frecuencia de recojo (veces/semana)</label><input id="i_frecuencia" type="number" min="0" max="14" inputmode="numeric" value="${esc(r.frecuencia || '')}"></div>
-      <div><label for="i_responsable">Responsable</label><input id="i_responsable" value="${esc(S.set.responsable)}" placeholder="Nombre del inspector"></div>
+      <div><label for="i_responsable">Responsable</label><input id="i_responsable" value="${esc(yo() ? yo().nombre : S.set.responsable)}" placeholder="Nombre del inspector" ${yo() ? 'readonly' : ''}></div>
     </div>
     <label style="margin-top:12px">Defectos</label><div class="chips" id="i_defectos">${S.cat.defectos.map(d => `<label><input type="checkbox" value="${esc(d)}" ${defs.includes(d) ? 'checked' : ''}>${esc(d)}</label>`).join('')}</div>
     <div style="margin-top:12px"><label for="i_nota">Nota de la inspección / acción realizada</label><textarea id="i_nota" placeholder="Ej.: se lavó el contenedor; tapa rota, se solicita reposición"></textarea></div>
@@ -404,7 +415,7 @@ function registrarCambio(r, nuevo, tipo, nota, fotos = []) {
   if (fotos.length) { r.fotos = [...fotosMeta(r), ...fotos]; cambios.fotos = ['', '+' + fotos.length]; }
   r.actualizado = hoy();
   r.historial = r.historial || [];
-  r.historial.push({id: uid('h'), fecha: r.actualizado, usuario: S.set.responsable || 'Sin nombre', tipo, nota, cambios});
+  r.historial.push({id: uid('h'), fecha: r.actualizado, usuario: nombreUsuario(), tipo, nota, cambios});
 }
 
 /* ---------- FORMULARIO (nuevo / editar) ---------- */
@@ -472,7 +483,7 @@ function formulario(id, preset) {
       <div class="w2"><label for="v_fotos">Fotografía georreferenciada</label><input id="v_fotos" type="file" accept="image/*" capture="environment" multiple><div class="hint">Al tomar la foto se graban en ella las coordenadas GPS (UTM y lat/lon), fecha y código, visibles en la imagen y en sus metadatos EXIF.</div></div>
       <div><label for="v_foto">Enlace de fotografía externa (Drive)</label><input id="v_foto" type="url" value="${esc(v.foto || '')}" placeholder="https://drive.google.com/…"></div>
       <div class="w2"><label for="v_obs">Observaciones</label><textarea id="v_obs">${esc(v.obs || '')}</textarea></div>
-      <div><label for="v_responsable">Responsable del registro</label><input id="v_responsable" value="${esc(S.set.responsable)}"></div>
+      <div><label for="v_responsable">Responsable del registro</label><input id="v_responsable" value="${esc(yo() ? yo().nombre : S.set.responsable)}" ${yo() ? 'readonly' : ''}></div>
     </div></fieldset>
     <div class="row"><button class="btn pri" type="submit">${r ? 'Guardar cambios' : 'Registrar'}</button><a class="btn" href="${r ? '#ficha/' + esc(r.id) : '#inventario'}">Cancelar</a></div>
   </form>`;
@@ -498,7 +509,7 @@ function formulario(id, preset) {
     const fotos = await guardarFotos($('#v_fotos').files, o.codigo, o.direccion);
     if (r) { registrarCambio(r, o, 'Edición', '', fotos); save('Cambios guardados'); location.hash = 'ficha/' + r.id; }
     else {
-      const n = {id: uid('d'), ...o, creado: hoy(), actualizado: hoy(), fotos, historial: [{id: uid('h'), fecha: hoy(), usuario: S.set.responsable || 'Sin nombre', tipo: 'Alta', nota: 'Registro nuevo', cambios: {}}]};
+      const n = {id: uid('d'), ...o, creado: hoy(), actualizado: hoy(), fotos, historial: [{id: uid('h'), fecha: hoy(), usuario: nombreUsuario(), tipo: 'Alta', nota: 'Registro nuevo', cambios: {}}]};
       S.devices.push(n); save('Dispositivo registrado'); location.hash = 'ficha/' + n.id;
     }
   };
@@ -508,7 +519,7 @@ function formulario(id, preset) {
 function mapa() {
   const L_ = filtrar();
   $('#view').innerHTML = `<div class="head"><div><h1>Mapa de dispositivos</h1><p class="mut">${fmt(L_.length)} puntos (respeta los filtros del inventario). Color = estado; tamaño = capacidad total.</p></div>
-  <div class="leg"><span><i class="c-ok"></i>Bueno</span><span><i class="c-warn"></i>Regular</span><span><i class="c-bad"></i>Malo</span></div></div><div class="row noprint" style="margin:-4px 0 8px"><button class="btn sm" id="miPos" type="button">Mi ubicación</button><span class="small mut">Toque el mapa para registrar un dispositivo nuevo en ese punto.</span></div><div id="mapa"></div><p class="small mut">Mapa base © OpenStreetMap (requiere internet). Sin conexión se muestran igualmente los puntos.</p><div id="dups"></div>`;
+  <div class="leg"><span><i class="c-ok"></i>Bueno</span><span><i class="c-warn"></i>Regular</span><span><i class="c-bad"></i>Malo</span></div></div><div class="row noprint" style="margin:-4px 0 8px"><button class="btn sm" id="miPos" type="button">Mi ubicación</button><span class="small mut" data-perm="registrar">Toque el mapa para registrar un dispositivo nuevo en ese punto.</span></div><div id="mapa"></div><p class="small mut">Mapa base © OpenStreetMap (requiere internet). Sin conexión se muestran igualmente los puntos.</p><div id="dups"></div>`;
   if (!window.L) { $('#mapa').innerHTML = '<p style="padding:16px">No se pudo cargar la librería de mapas.</p>'; return; }
   mapObj = L.map('mapa');
   capaBase(mapObj);
@@ -518,9 +529,9 @@ function mapa() {
     L.circleMarker([ll.lat, ll.lon], {radius: 5 + Math.sqrt(c.capTotal) / 8, color: '#000', weight: 1, fillColor: col[r.estado] || '#888', fillOpacity: .85})
       .bindPopup(`<b>${esc(r.codigo)}</b> · ${esc(r.tipo)}<br>${esc(r.direccion)}<br>${fmt(c.q)} × ${fmt(c.cap)} L · ${esc(r.estado)}<br><a href="#ficha/${esc(r.id)}">Abrir ficha</a>`).addTo(mapObj); });
   if (pts.length) mapObj.fitBounds(pts, {padding: [20, 20]}); else mapObj.setView([-7.9026, -78.5662], 15);
-  mapObj.on('click', ev => { const u = toUTM(ev.latlng.lat, ev.latlng.lng, 17); L.popup().setLatLng(ev.latlng).setContent(`E ${u.e} · N ${u.n}<br><a href="#nuevo/${u.e},${u.n}"><b>+ Registrar dispositivo aquí</b></a>`).openOn(mapObj); });
+  mapObj.on('click', ev => { const u = toUTM(ev.latlng.lat, ev.latlng.lng, 17); L.popup().setLatLng(ev.latlng).setContent(`E ${u.e} · N ${u.n}${puede('registrar') ? `<br><a href="#nuevo/${u.e},${u.n}"><b>+ Registrar dispositivo aquí</b></a>` : ''}`).openOn(mapObj); });
   let yo = null;
-  $('#miPos').onclick = () => { $('#miPos').textContent = 'Buscando…'; posicionActual(5000).then(p => { $('#miPos').textContent = 'Mi ubicación'; if (!p) return toast('No se obtuvo GPS (active la ubicación; requiere https).'); if (yo) yo.remove(); yo = L.circle([p.lat, p.lon], {radius: p.acc, color: '#1f5f99', fillOpacity: .15}).addTo(mapObj); const u = toUTM(p.lat, p.lon, 17); L.popup().setLatLng([p.lat, p.lon]).setContent(`Usted está aquí (±${Math.round(p.acc)} m)<br><a href="#nuevo/${u.e},${u.n}"><b>+ Registrar dispositivo aquí</b></a>`).openOn(mapObj); mapObj.setView([p.lat, p.lon], 18); }); };
+  $('#miPos').onclick = () => { $('#miPos').textContent = 'Buscando…'; posicionActual(5000).then(p => { $('#miPos').textContent = 'Mi ubicación'; if (!p) return toast('No se obtuvo GPS (active la ubicación; requiere https).'); if (yo) yo.remove(); yo = L.circle([p.lat, p.lon], {radius: p.acc, color: '#1f5f99', fillOpacity: .15}).addTo(mapObj); const u = toUTM(p.lat, p.lon, 17); L.popup().setLatLng([p.lat, p.lon]).setContent(`Usted está aquí (±${Math.round(p.acc)} m)${puede('registrar') ? `<br><a href="#nuevo/${u.e},${u.n}"><b>+ Registrar dispositivo aquí</b></a>` : ''}`).openOn(mapObj); mapObj.setView([p.lat, p.lon], 18); }); };
   const g = {}; L_.forEach(r => { const k = r.este + '/' + r.norte; (g[k] = g[k] || []).push(r); });
   const d = Object.values(g).filter(a => a.length > 1);
   $('#dups').innerHTML = d.length ? `<div class="alert"><b>${d.length} coordenadas compartidas por registros distintos</b> (posibles errores de georreferenciación): ${d.map(a => a.map(r => esc(r.codigo)).join(' = ')).join(' · ')}</div>` : '';
@@ -664,56 +675,6 @@ function fusionar(lista) { /* une por id o por código; gana la fecha de actuali
   });
   return {nuevos, act};
 }
-async function importarArchivo(file) {
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.json')) {
-    const o = JSON.parse(await file.text()); if (!Array.isArray(o.devices)) throw new Error('El archivo no es un respaldo de esta app.');
-    for (const [k, v] of Object.entries(o.fotos || {})) await DB.put(k, v);
-    const r = fusionarRemoto(o); save(); return `Respaldo importado: ${r.nuevos} nuevos, ${r.act} actualizados.`;
-  }
-  if (!window.XLSX) throw new Error('No se cargó la librería de Excel.');
-  const wb = XLSX.read(await file.arrayBuffer());
-  const ws = wb.Sheets['INVENTARIO'] || wb.Sheets[wb.SheetNames[0]];
-  const aoa = XLSX.utils.sheet_to_json(ws, {header: 1, defval: ''});
-  const hi = aoa.findIndex(row => row.some(c => String(c).trim().toUpperCase() === 'CÓDIGO'));
-  if (hi < 0) throw new Error('No se encontró la fila de encabezados con "CÓDIGO".');
-  const H = aoa[hi].map(h => String(h).trim());
-  const lista = aoa.slice(hi + 1).filter(row => row[H.indexOf('CÓDIGO')]).map(row => { const o = {}; H.forEach((h, i) => { if (MAP_IMPORT[h]) o[MAP_IMPORT[h]] = row[i]; }); o.actualizado = hoy(); return o; });
-  const r = fusionar(lista); save(); return `Excel importado: ${r.nuevos} nuevos, ${r.act} actualizados.`;
-}
-function datos() {
-  const listas = [['ubicaciones', 'Ubicaciones'], ['materiales', 'Materiales'], ['colores', 'Colores'], ['senalizacion', 'Señalización'], ['accesorios', 'Accesorios'], ['defectos', 'Defectos']];
-  $('#view').innerHTML = `<div class="head"><div><h1>Datos y ajustes</h1><p class="mut">Los datos se guardan en este equipo. Para trabajar en equipo, cada inspector exporta su respaldo y la oficina lo importa: los registros se fusionan por código y se conserva el historial de todos.</p></div></div>
-  <div class="grid2">
-    ${tarjetaDrive()}
-    <div class="card"><h3>Exportar</h3><div class="row"><button class="btn pri" id="eX" type="button">Excel completo (.xlsx)</button><button class="btn" id="eC" type="button">CSV</button></div>
-      <div class="row" style="margin-top:8px"><button class="btn" id="eJ" type="button">Respaldo JSON</button><button class="btn" id="eJF" type="button">Respaldo JSON con fotos</button></div>
-      <p class="hint">El Excel incluye las hojas INVENTARIO (mismas columnas que su sistema + diagnóstico de volumen), HISTORIAL y EVALUACIÓN VOLUMEN.</p></div>
-    <div class="card"><h3>Importar / consolidar</h3><label for="imp">Respaldo JSON de otro equipo o Excel con hoja INVENTARIO</label><input id="imp" type="file" accept=".json,.xlsx,.xls"><p class="hint">Se fusiona: si el código existe, gana la versión con fecha de actualización más reciente.</p><div id="impRes"></div></div>
-    <div class="card"><h3>Parámetros</h3><div class="fg">
-      <div><label for="s_resp">Responsable (este equipo)</label><input id="s_resp" value="${esc(S.set.responsable)}"></div>
-      <div><label for="s_anio">Año de referencia (vacío = actual)</label><input id="s_anio" type="number" value="${esc(S.set.anioRef)}" placeholder="${new Date().getFullYear()}"></div>
-      ${Object.keys(S.set.vida).map(m => `<div><label for="s_v_${esc(m)}">Vida útil ${esc(m)} (años)</label><input data-vida="${esc(m)}" id="s_v_${esc(m)}" type="number" value="${esc(S.set.vida[m])}"></div>`).join('')}
-      <div><label for="s_dens">Densidad de referencia (kg/m³)</label><input id="s_dens" type="number" value="${esc(S.set.densidad)}"></div>
-    </div><button class="btn pri" id="sGuardar" type="button" style="margin-top:10px">Guardar parámetros</button></div>
-    <div class="card"><h3>Catálogos</h3><p class="hint">Un elemento por línea. Sectores: “Nombre;CÓD”. Tipos: “Nombre;PREFIJO”.</p>
-      <div class="fg">
-      <div><label for="c_tipos">Tipos</label><textarea id="c_tipos" rows="4">${esc(S.cat.tipos.map(t => t.n + ';' + t.p).join('\n'))}</textarea></div>
-      <div><label for="c_sectores">Sectores</label><textarea id="c_sectores" rows="6">${esc(S.cat.sectores.map(s => s.join(';')).join('\n'))}</textarea></div>
-      ${listas.map(([k, t]) => `<div><label for="c_${k}">${t}</label><textarea id="c_${k}" rows="5">${esc(S.cat[k].join('\n'))}</textarea></div>`).join('')}
-      </div><button class="btn pri" id="cGuardar" type="button" style="margin-top:10px">Guardar catálogos</button></div>
-    <div class="card"><h3>Restablecer</h3><p>Vuelve a cargar el inventario 2025 original (114 registros). Se pierden los cambios no exportados.</p><button class="btn bad" id="reset" type="button">Restablecer datos iniciales</button></div>
-  </div>`;
-  eventosDrive();
-  $('#eX').onclick = () => exportarExcel(); $('#eC').onclick = exportarCSV; $('#eJ').onclick = () => exportarJSON(false); $('#eJF').onclick = () => exportarJSON(true);
-  $('#imp').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const m = await importarArchivo(f); $('#impRes').innerHTML = `<div class="alert ok">${esc(m)}</div>`; } catch (err) { $('#impRes').innerHTML = `<div class="alert bad">${esc(err.message)}</div>`; } };
-  $('#sGuardar').onclick = () => { S.set.responsable = $('#s_resp').value.trim(); S.set.anioRef = $('#s_anio').value; S.set.densidad = +$('#s_dens').value || 200; $$('[data-vida]').forEach(i => S.set.vida[i.dataset.vida] = +i.value || 8); save('Parámetros guardados'); };
-  $('#cGuardar').onclick = () => { const ln = id => $(id).value.split('\n').map(x => x.trim()).filter(Boolean);
-    S.cat.tipos = ln('#c_tipos').map(l => { const [n, p] = l.split(';'); return {n: n.trim(), p: (p || n.slice(0, 3)).trim().toUpperCase()}; });
-    S.cat.sectores = ln('#c_sectores').map(l => { const [n, p] = l.split(';'); return [n.trim(), (p || n.replace('S. ', '').slice(0, 3)).trim().toUpperCase()]; });
-    listas.forEach(([k]) => S.cat[k] = ln('#c_' + k)); save('Catálogos guardados'); };
-  $('#reset').onclick = () => confirmar('¿Restablecer el inventario original? Se perderán los cambios no exportados.', () => { S.devices = JSON.parse(JSON.stringify(window.DATA_INICIAL)); save('Datos restablecidos'); route(); });
-}
 
 /* =====================================================================
    FOTOS GEORREFERENCIADAS
@@ -772,7 +733,7 @@ async function fotoGeo(file, codigo, direccion) {
       jpeg = piexif.insert(piexif.dump({'0th': z, Exif: ex, GPS: gps}), jpeg);
     } catch (e) { console.warn('EXIF', e); }
   }
-  const meta = {k: uid('f'), fecha: hoy(), lat: pos ? +pos.lat.toFixed(7) : null, lon: pos ? +pos.lon.toFixed(7) : null, e: u ? u.e : null, n: u ? u.n : null, acc: pos && pos.acc ? Math.round(pos.acc) : null, origen: pos ? pos.origen : 'Sin ubicación', autor: (S.auth && S.auth.email) || S.set.responsable || ''};
+  const meta = {k: uid('f'), fecha: hoy(), lat: pos ? +pos.lat.toFixed(7) : null, lon: pos ? +pos.lon.toFixed(7) : null, e: u ? u.e : null, n: u ? u.n : null, acc: pos && pos.acc ? Math.round(pos.acc) : null, origen: pos ? pos.origen : 'Sin ubicación', autor: nombreUsuario()};
   return {meta, jpeg};
 }
 async function guardarFotos(files, codigo, direccion) {
@@ -838,81 +799,46 @@ function mapaFormulario(idActual, auto) {
 }
 
 /* =====================================================================
-   GOOGLE DRIVE + AUTORIZACIÓN
+   SERVIDOR (Google Apps Script del administrador), USUARIOS Y PERMISOS
    ===================================================================== */
-const CFG0 = Object.assign({clientId: '', folderId: '', requireLogin: true, allowedEmails: []}, window.CONFIG || {});
-const cfg = () => ({clientId: (S.set.clientId || CFG0.clientId || '').trim(), folderId: (S.set.folderId || CFG0.folderId || '').trim(), requireLogin: CFG0.requireLogin !== false, allowedEmails: (CFG0.allowedEmails || []).map(x => x.toLowerCase())});
-const G = {token: null, exp: 0, sync: false, tSync: null};
-const tokenOk = () => G.token && Date.now() < G.exp;
-function cargarGIS() {
-  return new Promise((ok, ko) => {
-    if (window.google && google.accounts && google.accounts.oauth2) return ok();
-    const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
-    s.onload = () => ok(); s.onerror = () => ko(new Error('No hay conexión con Google. Verifique internet.')); document.head.appendChild(s);
-  });
-}
-async function conectarGoogle() {
-  const c = cfg();
-  if (!c.clientId) throw new Error('Falta el ID de cliente OAuth de Google (config.js o Datos y ajustes).');
-  await cargarGIS();
-  return new Promise((ok, ko) => {
-    const tc = google.accounts.oauth2.initTokenClient({
-      client_id: c.clientId, scope: 'https://www.googleapis.com/auth/drive openid email profile', hint: S.auth ? S.auth.email : undefined,
-      callback: r => { if (r.error) return ko(new Error(r.error_description || r.error)); G.token = r.access_token; G.exp = Date.now() + (Number(r.expires_in || 3600) - 60) * 1000; estadoDrive(); ok(G.token); },
-      error_callback: e => ko(new Error(e && e.type === 'popup_closed' ? 'Se cerró la ventana de autorización.' : 'Autorización no concedida (' + ((e && (e.message || e.type)) || 'error') + ').'))
-    });
-    tc.requestAccessToken({prompt: S.auth ? '' : 'consent'});
-  });
-}
-async function gd(path, opt = {}) {
-  if (!tokenOk()) await conectarGoogle();
-  const url = path.startsWith('http') ? path : 'https://www.googleapis.com/drive/v3/' + path;
-  const r = await fetch(url, {...opt, headers: {Authorization: 'Bearer ' + G.token, ...(opt.headers || {})}});
-  if (r.status === 401) { G.token = null; estadoDrive(); throw new Error('La sesión de Google venció. Pulse «Sincronizar» para volver a autorizar.'); }
-  if (!r.ok) { const t = await r.text(); let m = t; try { m = JSON.parse(t).error.message; } catch (e) {} throw new Error('Google Drive (' + r.status + '): ' + m); }
-  return r;
-}
-const AD = 'supportsAllDrives=true&includeItemsFromAllDrives=true';
-async function dBuscar(nombre, padre, carpeta) {
-  const q = encodeURIComponent(`name='${nombre.replace(/'/g, "\\'")}' and '${padre}' in parents and trashed=false` + (carpeta ? " and mimeType='application/vnd.google-apps.folder'" : ''));
-  return (await (await gd(`files?q=${q}&fields=files(id,name,version,modifiedTime)&${AD}`)).json()).files || [];
-}
-async function dCarpeta(nombre, padre) {
-  const f = (await dBuscar(nombre, padre, true))[0]; if (f) return f.id;
-  return (await (await gd(`files?${AD}&fields=id`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: nombre, parents: [padre], mimeType: 'application/vnd.google-apps.folder'})})).json()).id;
-}
-async function dSubir(meta, blob, fileId) {
-  const b = 'rrss' + Date.now().toString(36);
-  const body = new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${b}\r\nContent-Type: ${blob.type || 'application/octet-stream'}\r\n\r\n`, blob, `\r\n--${b}--`]);
-  const url = `https://www.googleapis.com/upload/drive/v3/files${fileId ? '/' + fileId : ''}?uploadType=multipart&supportsAllDrives=true&fields=id,version,webViewLink`;
-  return (await gd(url, {method: fileId ? 'PATCH' : 'POST', headers: {'Content-Type': 'multipart/related; boundary=' + b}, body})).json();
-}
-async function verificarAcceso() {
-  const c = cfg(); if (!c.folderId) throw new Error('Falta el ID de la carpeta de Drive.');
-  const u = (await (await gd('about?fields=user(emailAddress,displayName)')).json()).user;
-  const email = (u.emailAddress || '').toLowerCase();
-  if (c.allowedEmails.length && !c.allowedEmails.includes(email)) throw new Error(`La cuenta ${email} no está en la lista de usuarios autorizados. Solicite acceso a la GSMyGA.`);
-  let fol;
-  try { fol = await (await gd(`files/${c.folderId}?fields=id,name,capabilities(canAddChildren)&supportsAllDrives=true`)).json(); }
-  catch (e) { throw new Error(`La cuenta ${email} no tiene acceso a la carpeta de Drive del inventario. Pida al administrador que la comparta con usted como Editor.`); }
-  if (!fol.capabilities || !fol.capabilities.canAddChildren) throw new Error(`La cuenta ${email} solo puede ver la carpeta «${fol.name}»; necesita permiso de Editor.`);
-  S.auth = {email, nombre: u.displayName, fecha: hoy(), carpeta: fol.name};
-  if (!S.set.responsable) S.set.responsable = u.displayName || email;
-  save();
-  return S.auth;
+const CFG0 = Object.assign({apiUrl: ''}, window.CONFIG || {});
+const API = () => (S.set.apiUrl || CFG0.apiUrl || '').trim();
+const PERMS = [['panel', 'Panel'], ['inventario', 'Inventario y fichas'], ['registrar', 'Registrar y editar dispositivos'], ['inspeccion', 'Inspeccionar / actualizar estado y fotos'], ['mapa', 'Mapa'], ['tecnico', 'Evaluación técnica'], ['diseno', 'Dimensionamiento'], ['datos', 'Descargar Excel y respaldos'], ['corregir', 'Corregir y volver a subir Excel'], ['eliminar', 'Eliminar registros']];
+const PRESETS = {
+  'Inspector de campo': ['panel', 'inventario', 'inspeccion', 'mapa'],
+  'Registrador de inventario': ['panel', 'inventario', 'registrar', 'inspeccion', 'mapa'],
+  'Supervisor': ['panel', 'inventario', 'registrar', 'inspeccion', 'mapa', 'tecnico', 'diseno', 'datos', 'corregir'],
+  'Solo consulta': ['panel', 'inventario', 'mapa', 'tecnico']
+};
+const PERM_VISTA = {panel: 'panel', inventario: 'inventario', ficha: 'inventario', nuevo: 'registrar', editar: 'registrar', inspeccion: 'inspeccion', mapa: 'mapa', tecnico: 'tecnico', diseno: 'diseno', datos: 'datos', usuarios: 'admin'};
+const yo = () => (S.auth && S.auth.usuario) || null;
+const esAdmin = () => !API() || (yo() && yo().rol === 'admin');
+function puede(p) { if (!API()) return true; const u = yo(); if (!u) return false; if (u.rol === 'admin') return true; return p !== 'admin' && (u.permisos || []).includes(p); }
+function primeraVista() { return ['panel', 'inventario', 'inspeccion', 'mapa', 'tecnico', 'diseno', 'datos'].find(v => puede(PERM_VISTA[v])) || 'panel'; }
+const nombreUsuario = () => yo() ? `${yo().nombre} (${yo().usuario})` : (S.set.responsable || 'Sin nombre');
+const G = {sync: false, tSync: null};
+async function api(accion, datos = {}) {
+  const url = API(); if (!url) throw new Error('El servidor no está configurado (config.js).');
+  if (!navigator.onLine) throw new Error('Sin conexión a internet.');
+  let r;
+  try { r = await fetch(url, {method: 'POST', body: JSON.stringify({accion, token: S.auth && S.auth.token, ...datos})}); }
+  catch (e) { throw new Error('No se pudo conectar con el servidor. Verifique internet o la URL del servidor.'); }
+  const j = await r.json().catch(() => ({ok: false, error: 'Respuesta no válida del servidor (revise que la implementación esté publicada para "Cualquier persona").'}));
+  if (!j.ok) { if (j.codigo === 'SESION') { S.auth = null; save(); setTimeout(route, 0); } throw new Error(j.error || 'Error del servidor.'); }
+  return j;
 }
 function pendientesFotos() { let n = 0; S.devices.forEach(r => fotosMeta(r).forEach(f => { if (!f.driveId) n++; })); return n; }
-function pendientesDatos() { return S.devices.filter(r => (r.actualizado || '') > ((S.sync && S.sync.fecha) || '')).length + (S.borrados || []).filter(b => b.fecha > ((S.sync && S.sync.fecha) || '')).length; }
+function pendientesDatos() { const d = (S.sync && S.sync.fecha) || ''; return S.devices.filter(r => (r.actualizado || '') > d).length + (S.borrados || []).filter(b => b.fecha > d).length; }
 function estadoDrive(txt) {
   const el = $('#estadoGuardado'); if (!el) return;
-  const c = cfg(), pf = pendientesFotos(), pd = pendientesDatos();
-  if (txt) el.textContent = txt;
-  else if (!c.clientId) el.textContent = 'Solo en este equipo';
-  else if (pd || pf) { el.textContent = `↑ ${pd + pf} pendientes`; el.title = `Pendiente de subir a Drive: ${pd} cambios y ${pf} fotos (toque para sincronizar)`; }
-  else el.textContent = 'Drive al día' + (S.sync ? ' · ' + S.sync.fecha.slice(11, 16) : '');
-  el.classList.toggle('pend', !!(c.clientId && (pd || pf)));
+  const pd = pendientesDatos(), pf = pendientesFotos(), u = yo();
+  let t = txt;
+  if (!t) t = !API() ? 'Modo local' : !u ? 'Sin sesión' : (pd || pf) ? `${u.usuario} · ↑ ${pd + pf}` : `${u.usuario} · Drive al día`;
+  el.textContent = t;
+  el.title = API() ? `Usuario: ${u ? nombreUsuario() : '—'} · Pendientes: ${pd} cambios, ${pf} fotos · Toque para opciones` : 'Modo local: los datos solo están en este equipo';
+  el.classList.toggle('pend', !!(API() && u && (pd || pf)));
 }
-function programarSync() { if (!cfg().clientId || !tokenOk() || !navigator.onLine) return estadoDrive(); clearTimeout(G.tSync); G.tSync = setTimeout(() => sincronizar(false), 4000); }
+function programarSync() { if (!API() || !S.auth || !navigator.onLine) return estadoDrive(); clearTimeout(G.tSync); G.tSync = setTimeout(() => sincronizar(false), 3000); }
 window.addEventListener('online', programarSync);
 function fusionarRemoto(o) {
   S.borrados = S.borrados || [];
@@ -922,90 +848,288 @@ function fusionarRemoto(o) {
   S.devices = S.devices.filter(d => !ids.has(d.id));
   return r;
 }
+function hojasDatos() { const wb = libroExcel(S.devices); const o = {}; wb.SheetNames.forEach(n => o[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], {header: 1, defval: ''})); return o; }
+function adoptarServidor(db) {
+  if (db.cat) S.cat = Object.assign(JSON.parse(JSON.stringify(CAT_DEF)), db.cat);
+  if (db.set) ['anioRef', 'vida', 'densidad'].forEach(k => { if (db.set[k] != null) S.set[k] = db.set[k]; });
+}
 async function sincronizar(manual = true) {
-  if (G.sync) return; G.sync = true;
+  if (G.sync) return;
+  if (!API()) { if (manual) toast('Modo local: configure el servidor (LEEME) para guardar en Drive.'); return; }
+  if (!S.auth) return;
+  G.sync = true;
   try {
     if (!navigator.onLine) throw new Error('Sin internet: los cambios quedan guardados en el equipo y se subirán después.');
-    const c = cfg(); estadoDrive('Conectando con Drive…');
-    if (!tokenOk() || !S.auth) await verificarAcceso();
-    const raiz = c.folderId, dirFotos = await dCarpeta('Fotos', raiz);
-    /* 1. Fotos pendientes */
-    let nF = 0, tot = pendientesFotos();
-    for (const r of S.devices) {
-      r.fotos = fotosMeta(r);
-      for (const f of r.fotos) {
-        if (f.driveId) continue;
-        const data = await DB.get(f.k).catch(() => null); if (!data) continue;
-        estadoDrive(`Subiendo foto ${nF + 1} de ${tot}…`);
-        const blob = await (await fetch(data)).blob();
-        const nombre = `${r.codigo}_${(f.fecha || hoy()).replace(/[:T]/g, '-').slice(0, 16)}_${f.k}.jpg`;
-        const desc = `${r.codigo} · ${r.tipo} · ${r.direccion} · UTM 17S E ${f.e ?? '–'} N ${f.n ?? '–'}${f.acc ? ' ±' + f.acc + ' m' : ''} · Lat ${f.lat ?? '–'} Lon ${f.lon ?? '–'} · ${f.fecha}`;
-        const res = await dSubir({name: nombre, parents: [dirFotos], mimeType: 'image/jpeg', description: desc, properties: {codigo: r.codigo, foto: f.k, este: String(f.e ?? ''), norte: String(f.n ?? '')}}, blob);
-        f.driveId = res.id; f.url = res.webViewLink || 'https://drive.google.com/file/d/' + res.id + '/view';
-        if (!r.foto) r.foto = f.url;
-        nF++; save();
+    const inicio = hoy(), primera = !(S.sync && S.sync.fecha);
+    const pend = new Set();
+    if (primera) {
+      estadoDrive('Descargando inventario…');
+      const p = await api('pull');
+      if (p.db.devices.length) {
+        const locales = S.devices.filter(d => !/^d\d{3}$/.test(d.id) && !p.db.devices.some(x => x.id === d.id || x.codigo === d.codigo));
+        S.devices = p.db.devices.concat(locales); S.borrados = p.db.borrados || []; adoptarServidor(p.db);
+        locales.forEach(d => pend.add(d.id));
+      } else S.devices.forEach(d => pend.add(d.id));
+    } else S.devices.forEach(d => { if ((d.actualizado || '') > S.sync.fecha) pend.add(d.id); });
+    /* 1. Fotos */
+    if (puede('registrar') || puede('inspeccion')) {
+      const tot = pendientesFotos(); let n = 0;
+      for (const r of S.devices) {
+        const fs = fotosMeta(r); let cambio = false;
+        for (const f of fs) {
+          if (f.driveId) continue;
+          const data = await DB.get(f.k).catch(() => null); if (!data) continue;
+          estadoDrive(`Subiendo foto ${++n} de ${tot}…`);
+          const j = await api('subirFoto', {data, nombre: `${r.codigo}_${(f.fecha || hoy()).replace(/[:T]/g, '-').slice(0, 16)}_${f.k}.jpg`,
+            descripcion: `${r.codigo} · ${r.tipo} · ${r.direccion} · UTM 17S E ${f.e ?? '–'} N ${f.n ?? '–'}${f.acc ? ' ±' + f.acc + ' m' : ''} · Lat ${f.lat ?? '–'} Lon ${f.lon ?? '–'} · ${f.fecha}`});
+          f.driveId = j.id; f.url = j.url; if (!r.foto) r.foto = j.url; cambio = true;
+        }
+        if (cambio) { r.fotos = fs; r.actualizado = hoy(); pend.add(r.id); save(); }
       }
     }
-    /* 2. Base de datos: descargar → fusionar → subir (reintenta si otro equipo escribió entre medio) */
-    let rs = {nuevos: 0, act: 0};
-    for (let intento = 0; intento < 3; intento++) {
-      estadoDrive('Sincronizando inventario…');
-      const ex = (await dBuscar('inventario_rrss.json', raiz))[0];
-      if (ex) { const remoto = await (await gd(`files/${ex.id}?alt=media&supportsAllDrives=true`)).json(); const x = fusionarRemoto(remoto); rs.nuevos += x.nuevos; rs.act += x.act; }
-      if (ex) { const v = (await (await gd(`files/${ex.id}?fields=version&supportsAllDrives=true`)).json()).version; if (v !== ex.version) continue; }
-      const payload = JSON.stringify({app: 'rrss_otuzco', version: 2, actualizado: hoy(), por: S.auth.email, devices: S.devices, borrados: S.borrados || [], cat: S.cat});
-      await dSubir(ex ? {name: 'inventario_rrss.json'} : {name: 'inventario_rrss.json', parents: [raiz], mimeType: 'application/json', description: 'Base de datos del inventario de dispositivos RR.SS. – no editar a mano'}, new Blob([payload], {type: 'application/json'}), ex && ex.id);
-      break;
+    /* 2. Inventario */
+    estadoDrive('Sincronizando inventario…');
+    const bor = (S.borrados || []).filter(b => primera || b.fecha > S.sync.fecha);
+    const res = await api('push', {devices: S.devices.filter(d => pend.has(d.id)), borrados: bor,
+      cat: esAdmin() ? S.cat : undefined, set: esAdmin() ? {anioRef: S.set.anioRef, vida: S.set.vida, densidad: S.set.densidad} : undefined});
+    const tarde = S.devices.filter(d => (d.actualizado || '') > inicio && !pend.has(d.id));
+    S.devices = res.db.devices; S.borrados = res.db.borrados || []; fusionar(tarde); adoptarServidor(res.db);
+    S.sync = {fecha: inicio, hoja: res.hoja || (S.sync && S.sync.hoja) || ''};
+    /* 3. Hoja de respuestas en Drive */
+    if (window.XLSX && (res.nuevos || res.act || bor.length || pend.size || primera || manual) && (puede('registrar') || puede('inspeccion') || puede('corregir'))) {
+      estadoDrive('Actualizando hoja de respuestas…'); const h = await api('hoja', {hojas: hojasDatos()}); S.sync.hoja = h.hoja;
     }
-    /* 3. Excel actualizado para consulta */
-    if (window.XLSX) {
-      estadoDrive('Actualizando Excel en Drive…');
-      const buf = XLSX.write(libroExcel(S.devices), {type: 'array', bookType: 'xlsx'});
-      const ex = (await dBuscar('Inventario_RRSS_Otuzco.xlsx', raiz))[0];
-      await dSubir(ex ? {name: 'Inventario_RRSS_Otuzco.xlsx'} : {name: 'Inventario_RRSS_Otuzco.xlsx', parents: [raiz]}, new Blob([buf], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), ex && ex.id);
-    }
-    S.sync = {fecha: hoy(), por: S.auth.email}; save(); estadoDrive();
-    if (manual || nF || rs.nuevos || rs.act) toast(`Drive sincronizado: ${nF} fotos subidas, ${rs.nuevos} registros nuevos y ${rs.act} actualizados desde otros equipos.`);
-    if (rs.nuevos || rs.act) route();
+    save(); estadoDrive();
+    if (res.rechazados && res.rechazados.length) toast('Algunos cambios no se aceptaron: ' + res.rechazados.slice(0, 3).join('; '));
+    else if (manual || pend.size) toast(`Guardado en Drive: ${pend.size} registros enviados${res.nuevos + res.act ? `, ${res.nuevos + res.act} aplicados` : ''}.`);
+    const v = (location.hash.slice(1) || 'panel').split('/')[0];
+    if (['panel', 'inventario', 'mapa', 'ficha', 'tecnico'].includes(v)) route();
   } catch (e) { estadoDrive(); if (manual) toast(e.message); else console.warn(e); }
   finally { G.sync = false; }
 }
-function requiereLogin() { const c = cfg(); return !!(c.clientId && c.requireLogin && !S.auth); }
+
+/* ---------- Ingreso ---------- */
+function requiereLogin() { return !!API() && !(S.auth && S.auth.token); }
+function marcoAcceso(html) { $('#tabs').hidden = true; $('#view').innerHTML = `<div class="card acceso">${html}</div>`; }
 function pantallaLogin() {
-  $('#tabs').hidden = true;
-  $('#view').innerHTML = `<div class="card" style="max-width:540px;margin:6vh auto">
-    <h1>Acceso restringido</h1>
-    <p>Esta aplicación guarda el inventario en la carpeta de Google Drive de la Gerencia de Servicios Municipales y Gestión Ambiental. Inicie sesión con una cuenta de Google que tenga permiso de <b>Editor</b> en esa carpeta.</p>
-    <button class="btn pri" id="login" type="button" style="width:100%;margin-top:8px">Iniciar sesión con Google</button>
-    <div id="loginMsg" style="margin-top:12px"></div>
-    <p class="hint">Se le pedirá autorizar el acceso a Google Drive. Después podrá trabajar sin señal; los cambios se suben al recuperar internet.</p></div>`;
-  $('#login').onclick = async () => {
-    $('#loginMsg').innerHTML = '<p class="mut">Esperando autorización…</p>';
-    try { await conectarGoogle(); const a = await verificarAcceso(); $('#tabs').hidden = false; toast('Bienvenido(a), ' + (a.nombre || a.email)); location.hash = 'panel'; route(); sincronizar(false); }
-    catch (e) { S.auth = null; $('#loginMsg').innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; }
+  marcoAcceso(`<h1>Ingreso al sistema</h1><p class="mut">Inventario de dispositivos de almacenamiento de RR.SS. · Use el usuario y la contraseña que le entregó el administrador.</p>
+    <form id="fl" class="form" autocomplete="on">
+      <div><label for="l_u">Usuario</label><input id="l_u" autocomplete="username" autocapitalize="none" required></div>
+      <div><label for="l_c">Contraseña</label><input id="l_c" type="password" autocomplete="current-password" required></div>
+      <button class="btn pri" type="submit">Ingresar</button><div id="l_msg"></div></form>
+    <p class="hint">¿Olvidó su contraseña? Pida al administrador que la restablezca.</p>`);
+  $('#l_u').focus();
+  $('#fl').onsubmit = async e => {
+    e.preventDefault(); $('#l_msg').innerHTML = '<p class="mut">Verificando…</p>';
+    try {
+      const j = await api('login', {usuario: $('#l_u').value, clave: $('#l_c').value});
+      S.auth = {token: j.token, usuario: j.usuario, desde: hoy()}; S.set.responsable = j.usuario.nombre;
+      if (S.sync && S.sync.usuario !== j.usuario.usuario) S.sync = null;
+      save(); if (!j.usuario.debeCambiar) { location.hash = primeraVista(); route(); sincronizar(false); } else route();
+    } catch (err) { $('#l_msg').innerHTML = `<div class="alert bad">${esc(err.message)}</div>`; }
   };
 }
-function tarjetaDrive() {
-  const c = cfg();
-  return `<div class="card"><h3>Google Drive y acceso</h3>
-    ${S.auth ? `<div class="alert ok">Sesión: <b>${esc(S.auth.email)}</b>${S.auth.carpeta ? ' · carpeta «' + esc(S.auth.carpeta) + '»' : ''}</div>` : `<div class="alert ${c.clientId ? '' : 'info'}">${c.clientId ? 'Sin sesión de Google en este equipo.' : 'Drive aún no configurado: falta el ID de cliente OAuth (vea LEEME, paso 2).'}</div>`}
-    <p class="small">Último envío: ${S.sync ? esc(S.sync.fecha.replace('T', ' ').slice(0, 16)) + ' por ' + esc(S.sync.por) : 'nunca'} · Pendientes: ${pendientesDatos()} cambios, ${pendientesFotos()} fotos.</p>
-    <div class="row"><button class="btn pri" id="dSync" type="button">Sincronizar ahora</button>${S.auth ? '<button class="btn" id="dOut" type="button">Cerrar sesión</button>' : ''}${c.folderId ? `<a class="btn" href="https://drive.google.com/drive/folders/${esc(c.folderId)}" target="_blank" rel="noopener">Abrir carpeta</a>` : ''}</div>
-    <details style="margin-top:12px"><summary><b>Configuración (administrador)</b></summary><div class="fg" style="margin-top:8px">
-      <div class="w2"><label for="g_cid">ID de cliente OAuth (Google Cloud)</label><input id="g_cid" value="${esc(S.set.clientId || '')}" placeholder="${esc(CFG0.clientId || '…apps.googleusercontent.com')}"></div>
-      <div class="w2"><label for="g_fid">Carpeta de Drive (enlace o ID)</label><input id="g_fid" value="${esc(S.set.folderId || '')}" placeholder="${esc(CFG0.folderId)}"></div>
-    </div><button class="btn" id="gGuardar" type="button" style="margin-top:8px">Guardar configuración</button>
-    <p class="hint">Lo normal es fijar estos valores una sola vez en <code>config.js</code> para todos los equipos.</p></details></div>`;
+function pantallaClave(obligatorio) {
+  const html = `<h1>${obligatorio ? 'Cree su contraseña personal' : 'Cambiar contraseña'}</h1>
+    ${obligatorio ? '<p class="mut">Por seguridad, reemplace la contraseña temporal que le entregaron.</p>' : ''}
+    <form id="fc" class="form">
+      <div><label for="c_a">Contraseña actual${obligatorio ? ' (temporal)' : ''}</label><input id="c_a" type="password" autocomplete="current-password" required></div>
+      <div><label for="c_n">Nueva contraseña</label><input id="c_n" type="password" autocomplete="new-password" minlength="8" required><div class="hint">Mínimo 8 caracteres, con letras y números.</div></div>
+      <div><label for="c_r">Repita la nueva contraseña</label><input id="c_r" type="password" autocomplete="new-password" required></div>
+      <div class="row"><button class="btn pri" type="submit">Guardar contraseña</button>${obligatorio ? '<button class="btn" type="button" id="c_out">Salir</button>' : `<a class="btn" href="#${primeraVista()}">Cancelar</a>`}</div><div id="c_msg"></div></form>`;
+  if (obligatorio) marcoAcceso(html); else $('#view').innerHTML = `<div class="card acceso">${html}</div>`;
+  if ($('#c_out')) $('#c_out').onclick = cerrarSesion;
+  $('#fc').onsubmit = async e => {
+    e.preventDefault();
+    if ($('#c_n').value !== $('#c_r').value) return $('#c_msg').innerHTML = '<div class="alert bad">Las contraseñas nuevas no coinciden.</div>';
+    try { const j = await api('cambiarClave', {actual: $('#c_a').value, nueva: $('#c_n').value}); S.auth.token = j.token; S.auth.usuario = j.usuario; save(); toast('Contraseña actualizada'); location.hash = primeraVista(); route(); sincronizar(false); }
+    catch (err) { $('#c_msg').innerHTML = `<div class="alert bad">${esc(err.message)}</div>`; }
+  };
 }
-function eventosDrive() {
-  $('#dSync').onclick = () => sincronizar(true).then(() => { if (location.hash === '#datos') datos(); });
-  if ($('#dOut')) $('#dOut').onclick = () => confirmar('¿Cerrar la sesión de Google en este equipo? Los cambios no sincronizados se conservan en el equipo.', () => { try { G.token && google.accounts.oauth2.revoke(G.token, () => {}); } catch (e) {} G.token = null; S.auth = null; save(); route(); });
-  $('#gGuardar').onclick = () => { S.set.clientId = $('#g_cid').value.trim(); const f = $('#g_fid').value.trim(); const m = f.match(/folders\/([\w-]+)/); S.set.folderId = m ? m[1] : f; S.auth = null; G.token = null; save('Configuración guardada'); route(); };
+function cerrarSesion() {
+  const pend = pendientesDatos() + pendientesFotos();
+  const salir = () => { S.auth = null; save(); route(); };
+  if (pend && API()) confirmar(`Tiene ${pend} cambios sin subir a Drive. Si cierra sesión seguirán guardados en este equipo y se subirán cuando vuelva a ingresar. ¿Cerrar sesión?`, salir); else salir();
+}
+function menuUsuario() {
+  if (!API()) { location.hash = 'datos'; return; }
+  if (!yo()) return route();
+  const d = $('#dlg');
+  $('#dlgBody').innerHTML = `<h3 style="margin-top:0">${esc(yo().nombre)}</h3><p class="mut small">${esc(yo().usuario)} · ${esc(yo().rol === 'admin' ? 'Administrador' : (yo().cargo || 'Usuario'))}</p>
+    <p class="small">Pendientes de subir: ${pendientesDatos()} cambios, ${pendientesFotos()} fotos.<br>Última sincronización: ${S.sync && S.sync.fecha ? esc(S.sync.fecha.replace('T', ' ').slice(0, 16)) : 'nunca'}</p>
+    <div class="row"><button class="btn pri" value="sync">Sincronizar ahora</button><button class="btn" value="clave">Cambiar contraseña</button><button class="btn bad" value="salir">Cerrar sesión</button><button class="btn" value="no">Cerrar</button></div>`;
+  d.onclose = () => { const v = d.returnValue; if (v === 'sync') sincronizar(true); if (v === 'clave') pantallaClave(false); if (v === 'salir') cerrarSesion(); };
+  d.showModal();
+}
+
+/* ---------- Fotografía principal en la ficha ---------- */
+const idDrive = url => { const m = String(url || '').match(/(?:[?&]id=|\/d\/)([\w-]{20,})/); return m ? m[1] : null; };
+const probarImg = src => new Promise(ok => { const im = new Image(), t = setTimeout(() => ok(null), 9000); im.onload = () => { clearTimeout(t); ok(im.naturalWidth > 40 ? src : null); }; im.onerror = () => { clearTimeout(t); ok(null); }; im.referrerPolicy = 'no-referrer'; im.src = src; });
+async function imagenDrive(id) {
+  const c = await DB.get('drv:' + id).catch(() => null); if (c) return c;
+  if (API() && S.auth && navigator.onLine) { try { const j = await api('foto', {id}); DB.put('drv:' + id, j.data).catch(() => {}); return j.data; } catch (e) { console.warn(e); } }
+  return navigator.onLine ? probarImg(`https://drive.google.com/thumbnail?id=${id}&sz=w1200`) : null;
+}
+function verImagen(src, pie) {
+  const d = $('#dlg');
+  $('#dlgBody').innerHTML = `<img src="${esc(src)}" alt="Fotografía" style="width:100%;border-radius:8px"><p class="small mut">${esc(pie || '')}</p><div class="row" style="justify-content:flex-end">${src.startsWith('data:') ? `<a class="btn" href="${esc(src)}" download="foto.jpg">Descargar</a>` : ''}<button class="btn pri" value="no">Cerrar</button></div>`;
+  d.onclose = null; d.showModal();
+}
+async function fotoPrincipal(r) {
+  const box = $('#fotoPrincipal'); if (!box) return;
+  let src = null, pie = '';
+  for (const f of fotosMeta(r).slice().reverse()) {
+    src = await DB.get(f.k).catch(() => null) || (f.driveId ? await imagenDrive(f.driveId) : null);
+    if (src) { pie = `Foto del ${(f.fecha || '').replace('T', ' ').slice(0, 16)}${f.e ? ` · E ${f.e} N ${f.n}${f.acc ? ' ±' + f.acc + ' m' : ''}` : ''}`; break; }
+  }
+  if (!src && idDrive(r.foto)) { src = await imagenDrive(idDrive(r.foto)); pie = 'Fotografía del inventario 2025'; }
+  if (!box.isConnected) return;
+  if (src) { box.innerHTML = `<img src="${esc(src)}" alt="Fotografía de ${esc(r.codigo)}" referrerpolicy="no-referrer"><div class="small mut pie">${esc(pie)} · toque para ampliar</div>`; $('img', box).onclick = () => verImagen(src, pie); }
+  else box.innerHTML = `<div class="sinfoto">Sin fotografía disponible${navigator.onLine ? '' : ' sin conexión'}.${r.foto ? ` <a href="${esc(r.foto)}" target="_blank" rel="noopener">Abrir en Drive</a>.` : ''}${puede('inspeccion') ? ` <a href="#inspeccion/${esc(r.id)}">Tomar foto ahora</a>.` : ''}</div>`;
+}
+
+/* ---------- Correcciones desde Excel / Hoja de Google ---------- */
+const NUMERICOS = ['cantidad', 'capacidad', 'largo', 'ancho', 'alto', 'anio', 'este', 'norte', 'frecuencia'];
+function aplicarCorrecciones(aoa, origen) {
+  const hi = aoa.findIndex(row => row.some(c => String(c).trim().toUpperCase() === 'CÓDIGO'));
+  if (hi < 0) throw new Error('No se encontró la fila de encabezados con "CÓDIGO".');
+  const H = aoa[hi].map(h => String(h).trim()), iC = H.indexOf('CÓDIGO'), iId = H.indexOf('ID');
+  let act = 0, nuevos = 0, iguales = 0, omitidos = 0;
+  aoa.slice(hi + 1).forEach(row => {
+    const cod = String(row[iC] ?? '').trim(); if (!cod) return;
+    const o = {};
+    H.forEach((h, i) => { const k = MAP_IMPORT[h]; if (!k || k === 'id') return; let v = row[i]; if (v instanceof Date) v = v.getFullYear(); if (typeof v === 'string') v = v.trim(); if (NUMERICOS.includes(k) && v !== '' && !isNaN(v)) v = Number(v); o[k] = v; });
+    const r = S.devices.find(d => (iId >= 0 && row[iId] && d.id === String(row[iId]).trim()) || d.codigo === cod);
+    if (!r) {
+      if (!puede('registrar') && !puede('corregir')) { omitidos++; return; }
+      S.devices.push({id: uid('d'), ...o, codigo: cod, creado: hoy(), actualizado: hoy(), fotos: [], historial: [{id: uid('h'), fecha: hoy(), usuario: nombreUsuario(), tipo: 'Alta', nota: 'Agregado desde ' + origen, cambios: {}}]}); nuevos++; return;
+    }
+    const cambios = {};
+    Object.keys(o).forEach(k => { if (String(r[k] ?? '').trim() !== String(o[k] ?? '').trim()) cambios[k] = o[k]; });
+    if (Object.keys(cambios).length) { registrarCambio(r, cambios, 'Corrección (' + origen + ')', 'Corrección masiva desde ' + origen); act++; } else iguales++;
+  });
+  save('Correcciones aplicadas');
+  return `${origen}: ${act} registros corregidos, ${nuevos} nuevos, ${iguales} sin cambios${omitidos ? ', ' + omitidos + ' omitidos por permisos' : ''}. ${API() ? 'Se están subiendo a Drive.' : ''}`;
+}
+async function importarArchivo(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.json')) {
+    if (!esAdmin()) throw new Error('Solo el administrador puede importar respaldos JSON.');
+    const o = JSON.parse(await file.text()); if (!Array.isArray(o.devices)) throw new Error('El archivo no es un respaldo de esta app.');
+    for (const [k, v] of Object.entries(o.fotos || {})) await DB.put(k, v);
+    const r = fusionarRemoto(o); S.devices.forEach(d => { if (o.devices.some(x => x.id === d.id)) d.actualizado = d.actualizado > hoy() ? d.actualizado : hoy(); });
+    save('Respaldo importado'); return `Respaldo importado: ${r.nuevos} nuevos, ${r.act} actualizados.`;
+  }
+  if (!window.XLSX) throw new Error('No se cargó la librería de Excel.');
+  const wb = XLSX.read(await file.arrayBuffer(), {cellDates: true});
+  const ws = wb.Sheets['INVENTARIO'] || wb.Sheets[wb.SheetNames[0]];
+  return aplicarCorrecciones(XLSX.utils.sheet_to_json(ws, {header: 1, defval: ''}), 'Excel ' + file.name);
+}
+
+/* ---------- DATOS ---------- */
+function datos() {
+  const listas = [['ubicaciones', 'Ubicaciones'], ['materiales', 'Materiales'], ['colores', 'Colores'], ['senalizacion', 'Señalización'], ['accesorios', 'Accesorios'], ['defectos', 'Defectos']];
+  const hojaUrl = S.sync && S.sync.hoja;
+  $('#view').innerHTML = `<div class="head"><div><h1>Datos y Excel de respuestas</h1><p class="mut">${API() ? 'Todo lo que se registra se guarda en el Drive del administrador: base de datos, fotos y la hoja «Inventario RRSS Otuzco – Respuestas».' : 'Modo local: los datos solo están en este equipo. Configure el servidor (LEEME) para guardarlos en Drive y activar usuarios.'}</p></div></div>
+  <div class="grid2">
+    <div class="card"><h3>1. Generar el Excel de respuestas</h3>
+      <p>Descarga el inventario completo con las hojas INVENTARIO, HISTORIAL, FOTOS GEORREF y EVALUACIÓN VOLUMEN.</p>
+      <div class="row"><button class="btn pri" id="eX" type="button">Descargar Excel (.xlsx)</button><button class="btn" id="eC" type="button">CSV</button>
+      ${hojaUrl ? `<a class="btn" href="${esc(hojaUrl)}" target="_blank" rel="noopener">Abrir hoja en Drive</a>` : ''}</div>
+      ${API() ? `<p class="hint">La hoja de Google en su Drive se actualiza sola en cada sincronización. Última: ${S.sync && S.sync.fecha ? esc(S.sync.fecha.replace('T', ' ').slice(0, 16)) : 'nunca'}.</p>` : ''}</div>
+    <div class="card" data-perm="corregir"><h3>2. Corregir y subir de nuevo</h3>
+      <ol class="small"><li>Descargue el Excel (paso 1) o abra la hoja en Drive.</li><li>Corrija las celdas en la hoja <b>INVENTARIO</b>, sin cambiar los encabezados ni las columnas CÓDIGO e ID. Las columnas calculadas (capacidad total, rango, prioridad…) se recalculan solas.</li><li>Suba el archivo corregido aquí. Solo se aplican las celdas que cambiaron y cada cambio queda en el historial con su nombre.</li></ol>
+      <label for="imp">Excel corregido (.xlsx)</label><input id="imp" type="file" accept=".xlsx,.xls${esAdmin() ? ',.json' : ''}">
+      ${API() ? '<div class="row" style="margin-top:10px"><button class="btn" id="dHoja" type="button">Aplicar las correcciones hechas en la hoja de Drive</button></div>' : ''}
+      <div id="impRes"></div></div>
+    <div class="card" data-perm="admin"><h3>Respaldo completo</h3><div class="row"><button class="btn" id="eJ" type="button">Respaldo JSON</button><button class="btn" id="eJF" type="button">Respaldo JSON con fotos</button></div><p class="hint">Copia de seguridad para el administrador. Para restaurarla, súbala en el recuadro 2.</p></div>
+    <div class="card" data-perm="admin"><h3>Parámetros</h3><div class="fg">
+      <div><label for="s_anio">Año de referencia (vacío = actual)</label><input id="s_anio" type="number" value="${esc(S.set.anioRef)}" placeholder="${new Date().getFullYear()}"></div>
+      ${Object.keys(S.set.vida).map(m => `<div><label for="s_v_${esc(m)}">Vida útil ${esc(m)} (años)</label><input data-vida="${esc(m)}" id="s_v_${esc(m)}" type="number" value="${esc(S.set.vida[m])}"></div>`).join('')}
+      <div><label for="s_dens">Densidad de referencia (kg/m³)</label><input id="s_dens" type="number" value="${esc(S.set.densidad)}"></div>
+    </div><button class="btn pri" id="sGuardar" type="button" style="margin-top:10px">Guardar parámetros</button></div>
+    <div class="card" data-perm="admin"><h3>Catálogos (listas desplegables)</h3><p class="hint">Un elemento por línea. Sectores: “Nombre;CÓD”. Tipos: “Nombre;PREFIJO”. Se comparten con todos los usuarios al sincronizar.</p>
+      <div class="fg">
+      <div><label for="c_tipos">Tipos</label><textarea id="c_tipos" rows="4">${esc(S.cat.tipos.map(t => t.n + ';' + t.p).join('\n'))}</textarea></div>
+      <div><label for="c_sectores">Sectores</label><textarea id="c_sectores" rows="6">${esc(S.cat.sectores.map(s => s.join(';')).join('\n'))}</textarea></div>
+      ${listas.map(([k, t]) => `<div><label for="c_${k}">${t}</label><textarea id="c_${k}" rows="5">${esc(S.cat[k].join('\n'))}</textarea></div>`).join('')}
+      </div><button class="btn pri" id="cGuardar" type="button" style="margin-top:10px">Guardar catálogos</button></div>
+    <div class="card" data-perm="admin"><h3>Servidor</h3><p class="small">${API() ? 'Conectado a: <code style="overflow-wrap:anywhere">' + esc(API()) + '</code>' : 'Sin servidor configurado.'}</p>
+      <details><summary>Cambiar URL del servidor en este equipo</summary><label for="g_api" style="margin-top:8px">URL de la aplicación web de Apps Script</label><input id="g_api" value="${esc(S.set.apiUrl || '')}" placeholder="${esc(CFG0.apiUrl || 'https://script.google.com/macros/s/…/exec')}"><button class="btn" id="gGuardar" type="button" style="margin-top:8px">Guardar</button><p class="hint">Lo normal es fijarla una vez en config.js para todos los equipos.</p></details>
+      ${API() ? '' : '<p style="margin-top:10px">Restablecer el inventario 2025 original en este equipo:</p><button class="btn bad" id="reset" type="button">Restablecer datos iniciales</button>'}</div>
+  </div>`;
+  const imp = async f => { try { const m = await f(); $('#impRes').innerHTML = `<div class="alert ok">${esc(m)}</div>`; } catch (err) { $('#impRes').innerHTML = `<div class="alert bad">${esc(err.message)}</div>`; } };
+  $('#eX').onclick = () => exportarExcel(); $('#eC').onclick = exportarCSV;
+  $('#eJ').onclick = () => exportarJSON(false); $('#eJF').onclick = () => exportarJSON(true);
+  $('#imp').onchange = e => { const f = e.target.files[0]; if (f) imp(() => importarArchivo(f)); };
+  if ($('#dHoja')) $('#dHoja').onclick = () => imp(async () => { $('#impRes').innerHTML = '<p class="mut">Leyendo la hoja de Drive…</p>'; await sincronizar(false); const j = await api('leerHoja'); return aplicarCorrecciones(j.filas, 'Hoja de Drive'); });
+  $('#sGuardar').onclick = () => { S.set.anioRef = $('#s_anio').value; S.set.densidad = +$('#s_dens').value || 200; $$('[data-vida]').forEach(i => S.set.vida[i.dataset.vida] = +i.value || 8); save('Parámetros guardados'); };
+  $('#cGuardar').onclick = () => { const ln = id => $(id).value.split('\n').map(x => x.trim()).filter(Boolean);
+    S.cat.tipos = ln('#c_tipos').map(l => { const [n, p] = l.split(';'); return {n: n.trim(), p: (p || n.slice(0, 3)).trim().toUpperCase()}; });
+    S.cat.sectores = ln('#c_sectores').map(l => { const [n, p] = l.split(';'); return [n.trim(), (p || n.replace('S. ', '').slice(0, 3)).trim().toUpperCase()]; });
+    listas.forEach(([k]) => S.cat[k] = ln('#c_' + k)); save('Catálogos guardados'); };
+  $('#gGuardar').onclick = () => { S.set.apiUrl = $('#g_api').value.trim(); S.auth = null; S.sync = null; save('Servidor guardado'); route(); };
+  if ($('#reset')) $('#reset').onclick = () => confirmar('¿Restablecer el inventario original? Se perderán los cambios no exportados.', () => { S.devices = JSON.parse(JSON.stringify(window.DATA_INICIAL)); save('Datos restablecidos'); route(); });
+}
+
+/* ---------- USUARIOS (solo administrador) ---------- */
+async function usuarios() {
+  if (!API()) { $('#view').innerHTML = `<h1>Usuarios y accesos</h1><div class="alert info">Para crear usuarios con contraseña y controlar a qué pestañas accede cada uno, primero instale el servidor en su cuenta de Google (LEEME.md, sección «Servidor») y ponga su URL en config.js.</div>`; return; }
+  $('#view').innerHTML = `<div class="head"><div><h1>Usuarios y accesos</h1><p class="mut">Cree los accesos de los responsables del inventario y marque qué pestañas y acciones puede usar cada uno. Solo usted, como administrador, ve esta pestaña.</p></div><button class="btn pri" id="uNuevo" type="button">+ Nuevo acceso</button></div>
+  <div id="uForm"></div><div id="uLista"><p class="mut">Cargando usuarios…</p></div>`;
+  let lista = [];
+  const pintar = () => {
+    $('#uLista').innerHTML = `<div class="scroll"><table class="stack"><thead><tr><th>Usuario</th><th>Nombre / cargo</th><th>Acceso a</th><th>Estado</th><th>Último ingreso</th><th></th></tr></thead><tbody>
+    ${lista.map(u => `<tr><td data-l="Usuario"><b>${esc(u.usuario)}</b></td><td data-l="Nombre">${esc(u.nombre)}<br><span class="small mut">${esc(u.cargo)}</span></td>
+      <td data-l="Acceso a" class="full">${u.rol === 'admin' ? '<span class="pill p-info">Administrador: todo</span>' : (u.permisos || []).map(p => `<span class="pill p-ok" style="margin:1px">${esc((PERMS.find(x => x[0] === p) || [p, p])[1])}</span>`).join(' ') || '<span class="mut">Ninguno</span>'}</td>
+      <td data-l="Estado">${u.activo ? (u.debeCambiar ? '<span class="pill p-warn">Clave temporal</span>' : '<span class="pill p-ok">Activo</span>') : '<span class="pill p-bad">Desactivado</span>'}</td>
+      <td data-l="Último ingreso">${esc((u.ultimoAcceso || '–').replace('T', ' ').slice(0, 16))}</td>
+      <td data-l="" class="full"><div class="row">${u.rol === 'admin' ? '' : `<button class="btn sm" data-ed="${esc(u.usuario)}" type="button">Editar</button><button class="btn sm" data-rs="${esc(u.usuario)}" type="button">Nueva clave</button><button class="btn sm bad" data-del="${esc(u.usuario)}" type="button">Eliminar</button>`}</div></td></tr>`).join('')}
+    </tbody></table></div>`;
+    $$('[data-ed]').forEach(b => b.onclick = () => formUsuario(lista.find(u => u.usuario === b.dataset.ed)));
+    $$('[data-rs]').forEach(b => b.onclick = () => confirmar(`¿Generar una nueva contraseña temporal para ${b.dataset.rs}? La anterior dejará de funcionar.`, async () => { try { const j = await api('resetClave', {usuario: b.dataset.rs}); mostrarCredencial(b.dataset.rs, j.clave); cargar(); } catch (e) { toast(e.message); } }));
+    $$('[data-del]').forEach(b => b.onclick = () => confirmar(`¿Eliminar el acceso de ${b.dataset.del}? Sus registros anteriores se conservan.`, async () => { try { await api('eliminarUsuario', {usuario: b.dataset.del}); toast('Acceso eliminado'); cargar(); } catch (e) { toast(e.message); } }));
+  };
+  const cargar = async () => { try { lista = (await api('usuarios')).usuarios; pintar(); } catch (e) { $('#uLista').innerHTML = `<div class="alert bad">${esc(e.message)}</div>`; } };
+  const formUsuario = u => {
+    const nuevo = !u; u = u || {usuario: '', nombre: '', cargo: '', permisos: PRESETS['Inspector de campo'], activo: true};
+    $('#uForm').innerHTML = `<form class="card form" id="fu" style="margin-bottom:16px"><h3 style="margin:0">${nuevo ? 'Nuevo acceso' : 'Editar acceso de ' + esc(u.usuario)}</h3>
+      <div class="fg"><div><label for="u_u">Usuario (para ingresar)</label><input id="u_u" value="${esc(u.usuario)}" ${nuevo ? '' : 'readonly'} required pattern="[a-zA-Z0-9._\\-]{3,30}" autocapitalize="none" placeholder="ej. jperez"></div>
+      <div><label for="u_n">Nombres y apellidos</label><input id="u_n" value="${esc(u.nombre)}" required></div>
+      <div><label for="u_c">Cargo / función</label><input id="u_c" value="${esc(u.cargo)}" placeholder="Inspector ambiental"></div>
+      ${nuevo ? '<div><label for="u_k">Contraseña inicial</label><input id="u_k" placeholder="Vacío = generar automáticamente" minlength="8"></div>' : `<div><label><input type="checkbox" id="u_a" ${u.activo ? 'checked' : ''} style="width:auto"> Acceso activo</label></div>`}</div>
+      <div><label for="u_p">Perfil rápido</label><select id="u_p"><option value="">(Personalizado)</option>${Object.keys(PRESETS).map(p => `<option>${p}</option>`).join('')}</select></div>
+      <div><label>Pestañas y acciones permitidas</label><div class="chips" id="u_perm">${PERMS.map(([k, t]) => `<label><input type="checkbox" value="${k}" ${(u.permisos || []).includes(k) ? 'checked' : ''}>${t}</label>`).join('')}</div></div>
+      <div class="row"><button class="btn pri" type="submit">${nuevo ? 'Crear acceso' : 'Guardar cambios'}</button><button class="btn" type="button" id="u_x">Cancelar</button></div><div id="u_msg"></div></form>`;
+    $('#u_p').onchange = () => { const p = PRESETS[$('#u_p').value]; if (p) $$('#u_perm input').forEach(i => i.checked = p.includes(i.value)); };
+    $('#u_x').onclick = () => $('#uForm').innerHTML = '';
+    $('#fu').onsubmit = async e => {
+      e.preventDefault();
+      const datos = {usuario: $('#u_u').value.trim(), nombre: $('#u_n').value.trim(), cargo: $('#u_c').value.trim(), permisos: $$('#u_perm input:checked').map(i => i.value), activo: $('#u_a') ? $('#u_a').checked : true, clave: $('#u_k') ? $('#u_k').value : ''};
+      if (!datos.permisos.length) return $('#u_msg').innerHTML = '<div class="alert">Marque al menos una pestaña.</div>';
+      try { const j = await api('guardarUsuario', {datos}); $('#uForm').innerHTML = ''; if (j.clave) mostrarCredencial(j.usuario.usuario, j.clave); else toast('Acceso actualizado'); cargar(); }
+      catch (err) { $('#u_msg').innerHTML = `<div class="alert bad">${esc(err.message)}</div>`; }
+    };
+    $('#u_u').focus();
+  };
+  $('#uNuevo').onclick = () => formUsuario(null);
+  cargar();
+}
+function mostrarCredencial(usuario, clave) {
+  const url = location.href.split('#')[0];
+  const texto = `Acceso al Inventario de dispositivos RR.SS. – MPO\nDirección: ${url}\nUsuario: ${usuario}\nContraseña temporal: ${clave}\nAl ingresar por primera vez se le pedirá crear su propia contraseña.`;
+  const d = $('#dlg');
+  $('#dlgBody').innerHTML = `<h3 style="margin-top:0">Credenciales para entregar</h3><p class="small">Copie y entregue estos datos al responsable. <b>La contraseña no se volverá a mostrar.</b></p>
+    <pre style="white-space:pre-wrap;background:var(--bg2);padding:10px;border-radius:8px;font-size:14px">${esc(texto)}</pre>
+    <div class="row" style="justify-content:flex-end"><button class="btn" type="button" id="cpy">Copiar</button><button class="btn pri" value="no">Listo</button></div>`;
+  $('#cpy').onclick = () => navigator.clipboard.writeText(texto).then(() => toast('Copiado'), () => toast('No se pudo copiar; selecciónelo manualmente.'));
+  d.onclose = null; d.showModal();
 }
 
 /* ---------- Inicio ---------- */
 load(); try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {} estadoDrive(); route();
-$('#estadoGuardado').onclick = () => { if (cfg().clientId) sincronizar(true); else location.hash = 'datos'; };
-setTimeout(() => { if (cfg().clientId && S.auth && navigator.onLine && pendientesDatos() + pendientesFotos() > 0) estadoDrive(); }, 800);
+$('#estadoGuardado').onclick = menuUsuario;
+if (API() && S.auth && navigator.onLine) setTimeout(() => sincronizar(false), 1500);
+setInterval(programarSync, 300000);
 window.__rrss = {calc, toUTM, fromUTM, S: () => S};
 }
