@@ -1,5 +1,5 @@
 /* Service worker: permite usar la app sin internet una vez abierta (requiere https). */
-const CACHE = 'rrss-otuzco-v3';
+const CACHE = 'rrss-otuzco-v4';
 const FILES = ['./', './index.html', './styles.css', './app.js', './data-inicial.js', './config.js', './vendor/piexif.js', './manifest.webmanifest', './icon.svg',
   './vendor/leaflet.js', './vendor/leaflet.css', './vendor/xlsx.full.min.js'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
